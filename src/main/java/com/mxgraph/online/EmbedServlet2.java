@@ -227,6 +227,11 @@ public class EmbedServlet2 extends HttpServlet
 		response.setCharacterEncoding("UTF-8");
 		response.setContentType("application/javascript; charset=UTF-8");
 		response.setHeader("Last-Modified", lastModified);
+		
+		if (request.getParameter("fetch") != null)
+		{
+			response.setHeader("Cache-Control", "no-store");
+		}
 
 		OutputStream out = response.getOutputStream();
 
@@ -266,7 +271,7 @@ public class EmbedServlet2 extends HttpServlet
 				{
 					if (names[i].equals("*"))
 					{
-						js.append(readXmlFile("/js/shapes.min.js", false));
+						js.append(readXmlFile("/js/shapes-14-6-5.min.js", false));
 						result.append(
 								"'" + readXmlFile("/stencils.xml", true) + "'");
 					}
@@ -421,7 +426,7 @@ public class EmbedServlet2 extends HttpServlet
 				+ "var script = document.createElement('script');"
 				+ "script.type = 'text/javascript';" + "script.src = '" + proto
 				+ ((dev != null && dev.equals("1")) ? "test" : "www")
-				+ ".draw.io/js/viewer.min.js';"
+				+ ".draw.io/js/viewer-static.min.js';"
 				+ "t[0].parentNode.appendChild(script);}";
 	}
 

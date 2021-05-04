@@ -1,8 +1,14 @@
 /**
- * Copyright (c) 2006-2017, JGraph Ltd
- * Copyright (c) 2006-2017, Gaudenz Alder
+ * Copyright (c) 2006-2020, JGraph Ltd
+ * Copyright (c) 2006-2020, draw.io AG
  */
-GitLabClient = function(editorUi)
+//Add a closure to hide the class private variables without changing the code a lot
+(function()
+{
+
+var _token = null;
+
+window.GitLabClient = function(editorUi)
 {
 	GitHubClient.call(this, editorUi, 'gitlabauth');
 };
@@ -13,7 +19,7 @@ mxUtils.extend(GitLabClient, GitHubClient);
 /**
  * Gitlab Client ID, see https://gitlab.com/oauth/applications/135239
  */
-GitLabClient.prototype.clientId = '5cdc018a32acddf6eba37592d9374945241e644b8368af847422d74c8709bc44';
+GitLabClient.prototype.clientId = DRAWIO_GITLAB_ID;
 
 /**
  * OAuth scope.
@@ -23,12 +29,41 @@ GitLabClient.prototype.scope = 'api%20read_repository%20write_repository';
 /**
  * Base URL for API calls.
  */
-GitLabClient.prototype.baseUrl = 'https://gitlab.com/api/v4';
+GitLabClient.prototype.baseUrl = DRAWIO_GITLAB_URL + '/api/v4';
+
+/**
+ * Maximum file size of the GitLab REST API.
+ */
+GitLabClient.prototype.maxFileSize = 10000000 /*10MB*/;
+
+/**
+ * Name for the auth token header.
+ */
+GitLabClient.prototype.authToken = 'Bearer';
+
+GitLabClient.prototype.redirectUri = window.location.protocol + '//' + window.location.host + '/gitlab';
 
 /**
  * Authorizes the client, gets the userId and calls <open>.
  */
 GitLabClient.prototype.authenticate = function(success, error)
+{
+	var req = new mxXmlRequest(this.redirectUri + '?getState=1', null, 'GET');
+	
+	req.send(mxUtils.bind(this, function(req)
+	{
+		if (req.getStatus() >= 200 && req.getStatus() <= 299)
+		{
+			this.authenticateStep2(req.getText(), success, error);
+		}
+		else if (error != null)
+		{
+			error(req);
+		}
+	}), error);
+};
+
+GitLabClient.prototype.authenticateStep2 = function(state, success, error)
 {
 	if (window.onGitLabCallback == null)
 	{
@@ -36,65 +71,107 @@ GitLabClient.prototype.authenticate = function(success, error)
 		{
 			var acceptAuthResponse = true;
 			
-			this.ui.showAuthDialog(this, true, mxUtils.bind(this, function(remember, authSuccess)
+			var authRemembered = this.getPersistentToken(true);
+			
+			if (authRemembered != null)
 			{
-				var state = '123';
-				var redirectUri = encodeURIComponent(window.location.origin + '/gitlab.html');
-				var win = window.open('https://gitlab.com/oauth/authorize?client_id=' +
-					this.clientId + '&scope=' + this.scope + '&redirect_uri=' + redirectUri +
-					'&response_type=token&state=' + state, 'gitlabauth');
+				var req = new mxXmlRequest(this.redirectUri + '?state=' + encodeURIComponent('cId=' + this.clientId + '&domain=' + window.location.hostname + '&token=' + state), null, 'GET'); //To identify which app/domain is used
 				
-				if (win != null)
+				req.send(mxUtils.bind(this, function(req)
 				{
-					window.onGitLabCallback = mxUtils.bind(this, function(code, authWindow)
+					if (req.getStatus() >= 200 && req.getStatus() <= 299)
 					{
-						if (acceptAuthResponse)
-						{
-							window.onGitLabCallback = null;
-							acceptAuthResponse = false;
-							
-							if (code == null)
-							{
-								error({message: mxResources.get('accessDenied'), retry: auth});
-							}
-							else
-							{
-								if (authSuccess != null)
-								{
-									authSuccess();
-								}
-								
-								this.token = code;
-								this.setUser(null);
-								
-								if (remember)
-								{
-									this.setPersistentToken(this.token);
-								}
-								
-								success();
-							}
-						}
-						else if (authWindow != null)
-						{
-							authWindow.close();
-						}
-					});
-				}
-				else
-				{
-					error({message: mxResources.get('serviceUnavailableOrBlocked'), retry: auth});
-				}
+						_token = JSON.parse(req.getText()).access_token;
+						this.setToken(_token);
+						this.setUser(null);
+						success();
+					}
+					else 
+					{
+						this.clearPersistentToken();
+						this.setUser(null);
+						_token = null;
+						this.setToken(null);
 
-			}), mxUtils.bind(this, function()
+						if (req.getStatus() == 401) // (Unauthorized) [e.g, invalid refresh token]
+						{
+							auth();
+						}
+						else
+						{
+							error({message: mxResources.get('accessDenied'), retry: auth});
+						}
+					}
+				}), error);
+			}
+			else
 			{
-				if (acceptAuthResponse)
+				this.ui.showAuthDialog(this, true, mxUtils.bind(this, function(remember, authSuccess)
 				{
-					window.onGitLabCallback = null;
-					acceptAuthResponse = false;
-					error({message: mxResources.get('accessDenied'), retry: auth});
-				}
-			}));
+					var win = window.open(DRAWIO_GITLAB_URL + '/oauth/authorize?client_id=' +
+						this.clientId + '&scope=' + this.scope + 
+						'&redirect_uri=' + encodeURIComponent(this.redirectUri) +
+						'&response_type=code&state=' + encodeURIComponent('cId=' + this.clientId + //To identify which app/domain is used
+							'&domain=' + window.location.hostname + '&token=' + state) , 'gitlabauth'); 
+					
+					if (win != null)
+					{
+						window.onGitLabCallback = mxUtils.bind(this, function(newAuthInfo, authWindow)
+						{
+							if (acceptAuthResponse)
+							{
+								window.onGitLabCallback = null;
+								acceptAuthResponse = false;
+								
+								if (newAuthInfo == null)
+								{
+									error({message: mxResources.get('accessDenied'), retry: auth});
+								}
+								else
+								{
+									if (authSuccess != null)
+									{
+										authSuccess();
+									}
+									
+									_token = newAuthInfo.access_token;
+									this.setToken(_token);
+									this.setUser(null);
+									
+									if (remember)
+									{
+										this.setPersistentToken('remembered');
+									}
+									
+									success();
+									
+									if (authWindow != null)
+									{
+										authWindow.close();
+									}
+								}
+							}
+							else if (authWindow != null)
+							{
+								authWindow.close();
+							}
+						});
+					}
+					else
+					{
+						error({message: mxResources.get('serviceUnavailableOrBlocked'), retry: auth});
+					}
+	
+				}), mxUtils.bind(this, function()
+				{
+					if (acceptAuthResponse)
+					{
+						window.onGitLabCallback = null;
+						acceptAuthResponse = false;
+						error({message: mxResources.get('accessDenied'), retry: auth});
+					}
+				}));
+			}
 		});
 		
 		auth();
@@ -120,11 +197,11 @@ GitLabClient.prototype.executeRequest = function(req, success, error, ignoreNotF
 			error({code: App.ERROR_TIMEOUT, message: mxResources.get('timeout')});
 		}), this.ui.timeout);
 		
-		var temp = this.token;
+		var temp = this.authToken + ' ' + _token;
 		
 		req.setRequestHeaders = function(request, params)
 		{
-			request.setRequestHeader('Authorization', 'Bearer ' + temp);
+			request.setRequestHeader('Authorization', temp);
 			request.setRequestHeader('PRIVATE_TOKEN', temp);
 			request.setRequestHeader('Content-Type', 'application/json');
 		};
@@ -195,7 +272,15 @@ GitLabClient.prototype.executeRequest = function(req, success, error, ignoreNotF
 						mxResources.get('error') + ' ' + req.getStatus())});
 				}
 			}
-		}), error);
+		}), mxUtils.bind(this, function(err)
+		{
+			window.clearTimeout(timeoutThread);
+				    	
+			if (acceptResponse)
+			{
+				error(err);
+			}
+		}));
 	});
 
 	var fn = mxUtils.bind(this, function(failOnAuth)
@@ -213,7 +298,7 @@ GitLabClient.prototype.executeRequest = function(req, success, error, ignoreNotF
 		}
 	});
 
-	if (this.token == null)
+	if (_token == null)
 	{
 		this.authenticate(function()
 		{
@@ -229,7 +314,7 @@ GitLabClient.prototype.executeRequest = function(req, success, error, ignoreNotF
 /**
  * Finds index of ref in given token list. This is required to support groups and subgroups.
  */
-GitLabClient.prototype.getRefIndex = function(tokens, isFolder, success, error, knownRefPos)
+GitLabClient.prototype.getRefIndex = function(tokens, isFolder, success, error, knownRefPos, checkRepo)
 {
 	if (knownRefPos != null)
 	{
@@ -254,8 +339,8 @@ GitLabClient.prototype.getRefIndex = function(tokens, isFolder, success, error, 
 				var ref = tokens[refPos];
 				var path = tokens.slice(refPos + 1, tokens.length).join('/');
 				var url = this.baseUrl + '/projects/' + encodeURIComponent(org + '/' + repo) + '/repository/' +
-					(!isFolder ? 'files/' + encodeURIComponent(path) + '?ref=' + ref :
-					'tree?path=' + path + '&ref=' + ref);
+					(!isFolder ? 'files/' + encodeURIComponent(path) + '?ref=' + ref : (checkRepo ?
+					'branches?per_page=1&page=1&ref=' + ref : 'tree?path=' + path + '&ref=' + ref));
 				
 				var req = new mxXmlRequest(url, null, 'HEAD');
 				
@@ -306,16 +391,34 @@ GitLabClient.prototype.getFile = function(path, success, error, asLibrary, check
 		
 		// Handles .vsdx, Gliffy and PNG+XML files by creating a temporary file
 		if (!checkExists && (/\.v(dx|sdx?)$/i.test(path) || /\.gliffy$/i.test(path) ||
-			(!this.ui.useCanvasForExport && binary)))
+			/\.pdf$/i.test(path) || (!this.ui.useCanvasForExport && binary)))
 		{
 			// Should never be null
-			if (this.token != null)
+			if (_token != null)
 			{
-				var url = this.baseUrl + '/projects/' + encodeURIComponent(org + '/' + repo) + '/repository/files/' + encodeURIComponent(ref);
+				// Adds random parameter to bypass cache
+				var rnd = '&t=' + new Date().getTime();
+				var url = this.baseUrl + '/projects/' + encodeURIComponent(org + '/' + repo) +
+					'/repository/files/' + encodeURIComponent(path) + '?ref=' + ref;
 				var tokens = path.split('/');
 				var name = (tokens.length > 0) ? tokens[tokens.length - 1] : path;
-		
-				this.ui.convertFile(url, name, null, this.extension, success, error);
+				
+				this.ui.convertFile(url + rnd, name, null, this.extension, success, error, mxUtils.bind(this, function(url, cb, err)
+				{
+					var req = new mxXmlRequest(url, null, 'GET');
+					
+					this.executeRequest(req, mxUtils.bind(this, function(req)
+					{
+						try
+						{
+							cb(this.getFileContent(JSON.parse(req.getText())));
+						}
+						catch (e)
+						{
+							err(e);
+						}
+					}), err);
+				}));
 			}
 			else
 			{
@@ -351,16 +454,9 @@ GitLabClient.prototype.getFile = function(path, success, error, asLibrary, check
  * @param {number} dx X-coordinate of the translation.
  * @param {number} dy Y-coordinate of the translation.
  */
-GitLabClient.prototype.createGitLabFile = function(org, repo, ref, data, asLibrary, refPos)
+GitLabClient.prototype.getFileContent = function(data)
 {
-	var gitLabUrl = 'https://gitlab.com/';
-	var htmlUrl = gitLabUrl + org + '/' + repo + '/blob/' + ref + '/' + data.file_path;
-	var downloadUrl = gitLabUrl + org + '/' + repo + '/raw/' + ref + '/' + data.file_path + '?inline=false';
 	var fileName = data.file_name;
-
-	var meta = {'org': org, 'repo': repo, 'ref': ref, 'name': fileName,
-		'path': data.file_path, 'html_url': htmlUrl, 'download_url': downloadUrl,
-		'last_commit_id': data.last_commit_id, 'refPos': refPos};
 	var content = data.content;
 	
 	if (data.encoding === 'base64')
@@ -372,6 +468,10 @@ GitLabClient.prototype.createGitLabFile = function(org, repo, ref, data, asLibra
 		else if (/\.gif$/i.test(fileName))
 		{
 			content = 'data:image/gif;base64,' + content;
+		}
+		else if (/\.pdf$/i.test(fileName))
+		{
+			content = 'data:application/pdf;base64,' + content;
 		}
 		else
 		{
@@ -395,6 +495,27 @@ GitLabClient.prototype.createGitLabFile = function(org, repo, ref, data, asLibra
 		}
 	}
 	
+	return content;
+};
+
+/**
+ * Translates this point by the given vector.
+ * 
+ * @param {number} dx X-coordinate of the translation.
+ * @param {number} dy Y-coordinate of the translation.
+ */
+GitLabClient.prototype.createGitLabFile = function(org, repo, ref, data, asLibrary, refPos)
+{
+	var gitLabUrl = DRAWIO_GITLAB_URL + '/';
+	var htmlUrl = gitLabUrl + org + '/' + repo + '/blob/' + ref + '/' + data.file_path;
+	var downloadUrl = gitLabUrl + org + '/' + repo + '/raw/' + ref + '/' + data.file_path + '?inline=false';
+	var fileName = data.file_name;
+
+	var meta = {'org': org, 'repo': repo, 'ref': ref, 'name': fileName,
+		'path': data.file_path, 'html_url': htmlUrl, 'download_url': downloadUrl,
+		'last_commit_id': data.last_commit_id, 'refPos': refPos};
+	var content = this.getFileContent(data);
+	
 	return (asLibrary) ? new GitLabLibrary(this.ui, content, meta) : new GitLabFile(this.ui, content, meta);
 };
 
@@ -407,8 +528,9 @@ GitLabClient.prototype.createGitLabFile = function(org, repo, ref, data, asLibra
 GitLabClient.prototype.insertFile = function(filename, data, success, error, asLibrary, folderId, base64Encoded)
 {
 	asLibrary = (asLibrary != null) ? asLibrary : false;
+	var tok = folderId.split('/');
 	
-	this.getRefIndex(folderId.split('/'), true, mxUtils.bind(this, function(tokens, refPos)
+	this.getRefIndex(tok, true, mxUtils.bind(this, function(tokens, refPos)
 	{
 		var repoPos = Math.max(refPos - 1, 0);
 		var org = tokens.slice(0, repoPos).join('/');
@@ -430,7 +552,7 @@ GitLabClient.prototype.insertFile = function(filename, data, success, error, asL
 				// Does not insert file here as there is another writeFile implicit via fileCreated
 				if (!asLibrary)
 				{
-					var gitLabUrl = 'https://gitlab.com/';
+					var gitLabUrl = DRAWIO_GITLAB_URL + '/';
 					var htmlUrl = gitLabUrl + org + '/' + repo + '/blob/' + ref + '/' + path;
 					var downloadUrl = gitLabUrl + org + '/' + repo + '/raw/' + ref + '/' + path + '?inline=false';
 					
@@ -468,7 +590,7 @@ GitLabClient.prototype.insertFile = function(filename, data, success, error, asL
 				error();
 			}
 		}))
-	}), error);
+	}), error, null, tok.length <= 4);
 };
 
 /**
@@ -518,7 +640,7 @@ GitLabClient.prototype.writeFile = function(org, repo, ref, path, message, data,
 	if (data.length >= this.maxFileSize)
 	{
 		error({message: mxResources.get('drawingTooLarge') + ' (' +
-			this.ui.formatFileSize(data.length) + ' / 1 MB)'});
+			this.ui.formatFileSize(data.length) + ' / 10 MB)'});
 	}
 	else
 	{
@@ -588,10 +710,13 @@ GitLabClient.prototype.saveFile = function(file, success, error, overwrite, mess
 	{
 		if (this.ui.useCanvasForExport && /(\.png)$/i.test(path))
 		{
+			var p = this.ui.getPngFileProperties(this.ui.fileNode);
+			
 			this.ui.getEmbeddedPng(mxUtils.bind(this, function(data)
 			{
 				fn(file.meta.last_commit_id, data);
-			}), error, (this.ui.getCurrentFile() != file) ? file.getData() : null);
+			}), error, (this.ui.getCurrentFile() != file) ?
+				file.getData() : null, p.scale, p.border);
 		}
 		else
 		{
@@ -649,7 +774,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 	var content = document.createElement('div');
 	content.style.whiteSpace = 'nowrap';
 	content.style.overflow = 'hidden';
-	content.style.height = '224px';
+	content.style.height = '304px';
 
 	var hd = document.createElement('h3');
 	mxUtils.write(hd, mxResources.get((showFiles) ? 'selectFile' : 'selectFolder'));
@@ -663,7 +788,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 	div.style.padding = '4px';
 	div.style.overflow = 'auto';
 	div.style.lineHeight = '1.2em';
-	div.style.height = '194px';
+	div.style.height = '274px';
 	content.appendChild(div);
 
 	var listItem = document.createElement('div');
@@ -677,20 +802,26 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 	{
 		fn(org + '/' + repo + '/' + encodeURIComponent(ref) + '/' + path);
 	}));
-	this.ui.showDialog(dlg.container, 340, 270, true, true);
+	this.ui.showDialog(dlg.container, 420, 360, true, true);
 	
 	if (showFiles)
 	{
 		dlg.okButton.parentNode.removeChild(dlg.okButton);
 	}
 	
-	var createLink = mxUtils.bind(this, function(label, fn, padding)
+	var createLink = mxUtils.bind(this, function(label, fn, padding, underline)
 	{
 		var link = document.createElement('a');
-		link.setAttribute('href', 'javascript:void(0);');
+		link.setAttribute('title', label);
+		link.style.cursor = 'pointer';
 		mxUtils.write(link,  label);
 		mxEvent.addListener(link, 'click', fn);
 
+		if (underline)
+		{
+			link.style.textDecoration = 'underline';
+		}
+		
 		if (padding != null)
 		{
 			var temp = listItem.cloneNode();
@@ -712,7 +843,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 		{
 			path = null;
 			selectRepo();
-		})));
+		}), null, true));
 		
 		if (!hideRef)
 		{
@@ -721,7 +852,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 			{
 				path = null;
 				selectRef();
-			})));
+			}), null, true));
 		}
 		
 		if (path != null && path.length > 0)
@@ -737,7 +868,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 					{
 						path = tokens.slice(0, index + 1).join('/');
 						selectFile();
-					})));
+					}), null, true));
 				})(i);
 			}
 		}
@@ -767,34 +898,72 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 		}));
 	});
 	
-	var selectFile = mxUtils.bind(this, function()
+	// Adds paging for repos, branches and files
+	var nextPageDiv = null;
+	var scrollFn = null;
+	var pageSize = 100;
+	
+	var selectFile = mxUtils.bind(this, function(page)
 	{
+		if (page == null)
+		{
+			div.innerHTML = '';
+			page = 1;
+		}
+		
 		var req = new mxXmlRequest(this.baseUrl + '/projects/' + encodeURIComponent(org + '/' + repo) +
-			'/repository/tree?path=' + path + '&ref=' + ref, null, 'GET');
-		dlg.okButton.removeAttribute('disabled');
-		div.innerHTML = '';
+			'/repository/tree?path=' + path + '&ref=' + ref + '&per_page=' + pageSize + '&page=' + page, null, 'GET');
 		this.ui.spinner.spin(div, mxResources.get('loading'));
+		dlg.okButton.removeAttribute('disabled');
+		
+		if (scrollFn != null)
+		{
+			mxEvent.removeListener(div, 'scroll', scrollFn);
+			scrollFn = null;
+		}
+		
+		if (nextPageDiv != null && nextPageDiv.parentNode != null)
+		{
+			nextPageDiv.parentNode.removeChild(nextPageDiv);
+		}
+		
+		nextPageDiv = document.createElement('a');
+		nextPageDiv.style.display = 'block';
+		nextPageDiv.style.cursor = 'pointer';
+		mxUtils.write(nextPageDiv, mxResources.get('more') + '...');
+		
+		var nextPage = mxUtils.bind(this, function()
+		{
+			selectFile(page + 1);
+		});
+		
+		mxEvent.addListener(nextPageDiv, 'click', nextPage);
 		
 		this.executeRequest(req, mxUtils.bind(this, function(req)
 		{
-			updatePathInfo(!ref);
 			this.ui.spinner.stop();
-			var files = JSON.parse(req.getText());
 			
-			div.appendChild(createLink('../ [Up]', mxUtils.bind(this, function()
+			if (page == 1)
 			{
-				if (path == '')
+				updatePathInfo(!ref);
+				
+				div.appendChild(createLink('../ [Up]', mxUtils.bind(this, function()
 				{
-					path = null;
-					selectRepo();
-				}
-				else
-				{
-					var tokens = path.split('/');
-					path = tokens.slice(0, tokens.length - 1).join('/');
-					selectFile();
-				}
-			}), '4px'));
+					if (path == '')
+					{
+						path = null;
+						selectRepo();
+					}
+					else
+					{
+						var tokens = path.split('/');
+						path = tokens.slice(0, tokens.length - 1).join('/');
+						selectFile();
+					}
+				}), '4px'));
+			}
+
+			var files = JSON.parse(req.getText());
 
 			if (files == null || files.length == 0)
 			{
@@ -803,6 +972,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 			else
 			{
 				var gray = true;
+				var count = 0;
 				
 				var listFiles = mxUtils.bind(this, function(showFolders)
 				{
@@ -813,7 +983,8 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 							if (showFolders == (file.type == 'tree'))
 							{
 								var temp = listItem.cloneNode();
-								temp.style.backgroundColor = (gray) ? '#eeeeee' : '';
+								temp.style.backgroundColor = (gray) ?
+									((uiTheme == 'dark') ? '#000000' : '#eeeeee') : '';
 								gray = !gray;
 
 								var typeImg = document.createElement('img');
@@ -839,6 +1010,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 								})));
 								
 								div.appendChild(temp);
+								count++;
 							}
 						}))(files[i]);
 					}
@@ -850,16 +1022,26 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 				{
 					listFiles(false);
 				}
+				
+				if (count == pageSize)
+				{
+					div.appendChild(nextPageDiv);
+					
+					scrollFn = function()
+					{
+						if (div.scrollTop >= div.scrollHeight - div.offsetHeight)
+						{
+							nextPage();
+						}
+					};
+					
+					mxEvent.addListener(div, 'scroll', scrollFn);
+				}
 			}
 		}), error, true);
 	});
-	
-	// Adds paging for repos and branches (files limited to 1000 by API)
-	var pageSize = 100;
-	var nextPageDiv = null;
-	var scrollFn = null;
 
-	var selectRef = mxUtils.bind(this, function(page)
+	var selectRef = mxUtils.bind(this, function(page, auto)
 	{
 		if (page == null)
 		{
@@ -872,6 +1054,12 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 		dlg.okButton.setAttribute('disabled', 'disabled');
 		this.ui.spinner.spin(div, mxResources.get('loading'));
 		
+		if (scrollFn != null)
+		{
+			mxEvent.removeListener(div, 'scroll', scrollFn);
+			scrollFn = null;
+		}
+		
 		if (nextPageDiv != null && nextPageDiv.parentNode != null)
 		{
 			nextPageDiv.parentNode.removeChild(nextPageDiv);
@@ -879,12 +1067,11 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 		
 		nextPageDiv = document.createElement('a');
 		nextPageDiv.style.display = 'block';
-		nextPageDiv.setAttribute('href', 'javascript:void(0);');
+		nextPageDiv.style.cursor = 'pointer';
 		mxUtils.write(nextPageDiv, mxResources.get('more') + '...');
 		
 		var nextPage = mxUtils.bind(this, function()
 		{
-			mxEvent.removeListener(div, 'scroll', scrollFn);
 			selectRef(page + 1);
 		});
 		
@@ -911,6 +1098,12 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 			{
 				mxUtils.write(div, mxResources.get('noFiles'));
 			}
+			else if (branches.length == 1 && auto)
+			{
+				ref = branches[0].name;
+				path = '';
+				selectFile();
+			}
 			else
 			{
 				for (var i = 0; i < branches.length; i++)
@@ -918,7 +1111,8 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 					(mxUtils.bind(this, function(branch, idx)
 					{
 						var temp = listItem.cloneNode();
-						temp.style.backgroundColor = (idx % 2 == 0) ? '#eeeeee' : '';
+						temp.style.backgroundColor = (idx % 2 == 0) ?
+							((uiTheme == 'dark') ? '#000000' : '#eeeeee') : '';
 						
 						temp.appendChild(createLink(branch.name, mxUtils.bind(this, function()
 						{
@@ -961,7 +1155,13 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 			div.innerHTML = '';
 			page = 1;
 		}
-
+		
+		if (scrollFn != null)
+		{
+			mxEvent.removeListener(div, 'scroll', scrollFn);
+			scrollFn = null;
+		}
+		
 		if (nextPageDiv != null && nextPageDiv.parentNode != null)
 		{
 			nextPageDiv.parentNode.removeChild(nextPageDiv);
@@ -969,12 +1169,11 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 		
 		nextPageDiv = document.createElement('a');
 		nextPageDiv.style.display = 'block';
-		nextPageDiv.setAttribute('href', 'javascript:void(0);');
+		nextPageDiv.style.cursor = 'pointer';
 		mxUtils.write(nextPageDiv, mxResources.get('more') + '...');
 		
 		var nextPage = mxUtils.bind(this, function()
 		{
-			mxEvent.removeListener(div, 'scroll', scrollFn);
 			selectRepo(page + 1);
 		});
 		
@@ -1035,15 +1234,18 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 									{
 										org = tokens[0];
 										repo = tokens[1];
-										ref = 'master';
 										path = null;
+										ref = null;
 										
 										if (tokens.length > 2)
 										{
-											path = encodeURIComponent(tokens.slice(2, tokens.length).join('/'));
+											ref = encodeURIComponent(tokens.slice(2, tokens.length).join('/'));
+											selectFile();
 										}
-										
-										selectFile();
+										else
+										{
+											selectRef(null, true);
+										}
 									}
 									else
 									{
@@ -1067,17 +1269,17 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 						(mxUtils.bind(this, function(repository, idx)
 						{
 							var temp = listItem.cloneNode();
-							temp.style.backgroundColor = (gray) ? '#eeeeee' : '';
+							temp.style.backgroundColor = (idx % 2 == 0) ?
+								((uiTheme == 'dark') ? '#000000' : '#eeeeee') : '';
 							gray = !gray;
 							
 							temp.appendChild(createLink(repository.name_with_namespace, mxUtils.bind(this, function()
 							{
 								org = repository.owner.username;
 								repo = repository.path;
-								ref = repository.default_branch || 'master';
 								path = '';
-		
-								selectFile();
+								
+								selectRef(null, true);
 							})));
 							
 							div.appendChild(temp);
@@ -1091,22 +1293,23 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 							for (var j = 0; j < projects.length; j++)
 							{
 								var temp = listItem.cloneNode();
-								temp.style.backgroundColor = (gray) ? '#eeeeee' : '';
+								temp.style.backgroundColor = (idx % 2 == 0) ?
+									((uiTheme == 'dark') ? '#000000' : '#eeeeee') : '';
 								gray = !gray;
 								
-								var project = projects[j];
-								
-								temp.appendChild(createLink(project.name_with_namespace, mxUtils.bind(this, function()
+								(mxUtils.bind(this, function(project)
 								{
-									org = group.full_path;
-									repo = project.path;
-									ref = project.default_branch || 'master';
-									path = '';
-			
-									selectFile();
-								})));
-
-								div.appendChild(temp);
+									temp.appendChild(createLink(project.name_with_namespace, mxUtils.bind(this, function()
+									{
+										org = group.full_path;
+										repo = project.path;
+										path = '';
+	
+										selectRef(null, true);
+									})));
+	
+									div.appendChild(temp);
+								}))(projects[j]);
 							}
 						})));
 					}
@@ -1130,7 +1333,7 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
 		}));
 	});
 
-	if (!this.token)
+	if (!_token)
 	{
 		this.authenticate(mxUtils.bind(this, function()
 		{
@@ -1155,7 +1358,12 @@ GitLabClient.prototype.showGitLabDialog = function(showFiles, fn)
  */
 GitLabClient.prototype.logout = function()
 {
+	//Send to server to clear refresh token cookie
+	this.ui.editor.loadUrl(this.redirectUri + '?doLogout=1&state=' + encodeURIComponent('cId=' + this.clientId + '&domain=' + window.location.hostname));
 	this.clearPersistentToken();
 	this.setUser(null);
-	this.token = null;
+	_token = null;
+	this.setToken(null);
 };
+
+})();
